@@ -1,0 +1,64 @@
+{
+  "name": "fumo-clip",
+  "version": "0.6.0",
+  "description": "Fumo Clip: an open-source clip library and player for OBS replay buffer clips, with per-track audio mixing, trimming and one-click sharing.",
+  "main": "src/main.js",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --publish never"
+  },
+  "build": {
+    "appId": "dev.clipdeck.app",
+    "productName": "Fumo Clip",
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "node_modules/ffprobe-static/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "files": [
+      "src/**",
+      "assets/**",
+      "package.json",
+      "!node_modules/ffprobe-static/bin/darwin/**",
+      "!node_modules/ffprobe-static/bin/linux/**",
+      "!node_modules/ffprobe-static/bin/win32/ia32/**"
+    ],
+    "artifactName": "Fumo-Clip-Setup-${version}.${ext}",
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "Fumo-Clip-Setup-${version}.${ext}",
+      "shortcutName": "Fumo Clip",
+      "uninstallDisplayName": "Fumo Clip"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "floorexe",
+        "repo": "fumo-clip",
+        "releaseType": "release"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9",
+    "ffmpeg-static": "5.2.0",
+    "ffprobe-static": "3.1.0",
+    "obs-websocket-js": "5.0.6"
+  },
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8"
+  },
+  "productName": "Fumo Clip",
+  "author": "floorexe",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/floorexe/fumo-clip.git"
+  },
+  "homepage": "https://github.com/floorexe/fumo-clip"
+}
