@@ -418,6 +418,7 @@ function wireLibrary() {
     localStorage.cardSize = e.target.value;
   });
   $('#btn-folder').onclick = () => api.invoke('shell:openLibrary');
+  $('#btn-import').onclick = openImport;
   $('#btn-save-replay').onclick = async () => {
     await call('obs:save');
     toast('Saving replay…');
@@ -637,7 +638,7 @@ function modal(html, { wide = false, onClose = null } = {}) {
     if (onClose) onClose();
   };
   back.addEventListener('mousedown', (e) => e.target === back && (back.dataset.down = '1'));
-  back.addEventListener('mouseup', (e) => e.target === back && back.dataset.down && close());
+  back.addEventListener('mouseup', (e) => e.target === back && back.dataset.down && !back.dataset.busy && close());
   return { el: back, close };
 }
 function promptModal({ title, value = '', placeholder = '', ok = 'OK', datalist = null, note = '' }) {
@@ -2284,6 +2285,131 @@ function renderUpdateStatus() {
   el.textContent = [cur, msg].filter(Boolean).join(' · ');
   const btn = $('#s-upd-install');
   if (btn) btn.classList.toggle('hidden', u.state !== 'ready');
+}
+
+// ============================================================ import from other recorders
+const gb = (b) => (b >= 1e9 ? (b / 1073741824).toFixed(1) + ' GB' : Math.max(1, Math.round(b / 1048576)) + ' MB');
+
+async function openImport() {
+  const m = modal(`<h2>Import clips</h2><div class="body" id="imp-body"><p>Looking for clips on this PC…</p></div><div class="foot" id="imp-foot"><button class="btn ghost" data-x>Cancel</button></div>`, { wide: true });
+  const el = m.el;
+  const body = $('#imp-body', el);
+  const foot = $('#imp-foot', el);
+  let sources = [];
+  try {
+    sources = await call('import:sources');
+  } catch {
+    sources = [];
+  }
+  const picked = new Set(sources.filter((s) => s.id === 'moments').map((s) => s.id));
+  if (!picked.size && sources[0]) picked.add(sources[0].id);
+
+  // ---- step 1: choose sources
+  const step1 = () => {
+    body.innerHTML = `
+      <p>Pick where to import from. Fumo Clip works out each clip's game and date, and from SteelSeries Moments it also keeps your trims and titles.</p>
+      <div class="imp-list">${
+        sources.length
+          ? sources
+              .map(
+                (s) => `<label class="imp-src"><input type="checkbox" data-src="${esc(s.id)}" ${picked.has(s.id) ? 'checked' : ''}>
+              <div><b>${esc(s.name)}</b><small>${esc(s.dir)}</small>${s.note ? `<small class="imp-note">${esc(s.note)}</small>` : ''}</div>
+              <span>${s.count == null ? 'folder' : `${s.count} clip${s.count === 1 ? '' : 's'} · ${gb(s.bytes)}`}</span></label>`
+              )
+              .join('')
+          : '<div class="nav-empty">No other clip folders found in your Videos folder. Pick a folder below.</div>'
+      }</div>
+      <button class="btn" id="imp-add">${icon('folder')}Add another folder…</button>`;
+    foot.innerHTML = `<button class="btn ghost" data-x>Cancel</button><button class="btn primary" id="imp-next">Next</button>`;
+    $('[data-x]', foot).onclick = m.close;
+    $$('[data-src]', body).forEach((cb) => (cb.onchange = () => (cb.checked ? picked.add(cb.dataset.src) : picked.delete(cb.dataset.src), sync())));
+    $('#imp-add', body).onclick = async () => {
+      const s = await call('import:pickFolder').catch(() => null);
+      if (!s) return;
+      if (!sources.some((x) => x.id === s.id)) sources.push(s);
+      picked.add(s.id);
+      step1();
+    };
+    const sync = () => ($('#imp-next', foot).disabled = !picked.size);
+    $('#imp-next', foot).onclick = () => step2();
+    sync();
+  };
+
+  // ---- step 2: summary + move/copy
+  const step2 = async () => {
+    const chosen = sources.filter((s) => picked.has(s.id)).map(({ id, name, dir }) => ({ id, name, dir }));
+    body.innerHTML = '<p>Scanning clips…</p>';
+    foot.innerHTML = `<button class="btn ghost" data-x>Cancel</button>`;
+    $('[data-x]', foot).onclick = m.close;
+    let r;
+    try {
+      r = await call('import:scan', chosen);
+    } catch {
+      return step1();
+    }
+    const copyFits = r.free == null || r.free > r.bytes + 2 * 1073741824;
+    const moveFits = r.free == null || !r.crossDrive || r.free > r.crossBytes + 2 * 1073741824;
+    let mode = moveFits ? 'move' : 'copy';
+    const extras = [r.trims ? `${r.trims} trims` : '', r.titles ? `${r.titles} custom titles` : ''].filter(Boolean).join(' and ');
+    body.innerHTML = `
+      <div class="imp-sum">
+        <div class="imp-big">${r.fresh}<small>clip${r.fresh === 1 ? '' : 's'} to import · ${gb(r.bytes)}</small></div>
+        <div class="imp-facts">
+          ${r.duplicates ? `<div>${r.duplicates} already in your library, skipped</div>` : ''}
+          ${extras ? `<div>Brings over ${extras} from Moments</div>` : ''}
+          <div>Goes into <code>${esc(r.library)}</code>${r.organize ? ', in a folder per game' : ''}</div>
+        </div>
+      </div>
+      <div class="imp-games">${r.games
+        .slice(0, 14)
+        .map((g) => `<span>${esc(g.game)} <em>${g.n}</em></span>`)
+        .join('')}${r.games.length > 14 ? `<span class="muted">+${r.games.length - 14} more</span>` : ''}</div>
+      <div class="imp-modes">
+        <label class="imp-mode ${moveFits ? '' : 'disabled'}"><input type="radio" name="imp-mode" value="move" ${mode === 'move' ? 'checked' : ''} ${moveFits ? '' : 'disabled'}>
+          <div><b>Move</b> <span class="tag-ok">recommended</span><small>${r.crossDrive ? 'Some clips are on another drive, so those get copied and then removed.' : 'Instant and uses no extra space (same drive).'} The clips leave their old folder, so the other app won't show them any more.</small></div></label>
+        <label class="imp-mode ${copyFits ? '' : 'disabled'}"><input type="radio" name="imp-mode" value="copy" ${mode === 'copy' ? 'checked' : ''} ${copyFits ? '' : 'disabled'}>
+          <div><b>Copy</b><small>${copyFits ? `Keeps the originals too. Needs ${gb(r.bytes)} of free space${r.free != null ? ` (you have ${gb(r.free)})` : ''}.` : `Not enough space: needs ${gb(r.bytes)}, only ${gb(r.free)} free.`}</small></div></label>
+      </div>`;
+    foot.innerHTML = `<button class="btn ghost" id="imp-back">Back</button><button class="btn primary" id="imp-go" ${r.fresh && (moveFits || copyFits) ? '' : 'disabled'}>Import ${r.fresh} clip${r.fresh === 1 ? '' : 's'}</button>`;
+    $$('[name=imp-mode]', body).forEach((rd) => (rd.onchange = () => (mode = rd.value)));
+    $('#imp-back', foot).onclick = step1;
+    $('#imp-go', foot).onclick = () => step3(mode, r.fresh);
+  };
+
+  // ---- step 3: progress
+  const step3 = async (mode, n) => {
+    body.innerHTML = `
+      <div class="imp-run">
+        <div class="imp-big" id="imp-count">0<small>of ${n} clips ${mode === 'move' ? 'moved' : 'copied'}</small></div>
+        <div class="progress"><div id="imp-bar"></div></div>
+        <div class="hint" id="imp-cur">&nbsp;</div>
+      </div>`;
+    foot.innerHTML = `<button class="btn ghost" id="imp-stop">Stop</button>`;
+    $('#imp-stop', foot).onclick = () => (api.invoke('import:cancel'), ($('#imp-stop', foot).disabled = true), ($('#imp-cur', body).textContent = 'Stopping after the current clip…'));
+    m.el.dataset.busy = '1';
+    const offP = api.on('import:progress', (p) => {
+      $('#imp-count', body).firstChild.textContent = p.done;
+      $('#imp-bar', body).style.width = ((p.bytesDone / Math.max(1, p.bytesTotal)) * 100).toFixed(1) + '%';
+      $('#imp-cur', body).textContent = `${p.game} · ${p.current}`;
+    });
+    const offD = api.on('import:done', async (d) => {
+      offP();
+      offD();
+      delete m.el.dataset.busy;
+      S.clips = await api.invoke('library:current');
+      await refreshCats();
+      renderAll();
+      body.innerHTML = `<div class="imp-run"><div class="imp-big">${d.imported}<small>clip${d.imported === 1 ? '' : 's'} imported${d.cancelled ? ' (stopped early)' : ''}</small></div>
+        ${d.failed ? `<div class="set-note warn">${d.failed} could not be imported:<br>${d.errors.map(esc).join('<br>')}</div>` : ''}
+        <p>Thumbnails and audio info fill in over the next minute or so.</p></div>`;
+      foot.innerHTML = `<button class="btn primary" data-x>Done</button>`;
+      $('[data-x]', foot).onclick = m.close;
+      toast(`Imported ${d.imported} clip${d.imported === 1 ? '' : 's'}`, 'good');
+    });
+    await call('import:start', { mode });
+  };
+
+  step1();
 }
 
 boot();

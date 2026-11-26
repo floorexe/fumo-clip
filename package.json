@@ -1,6 +1,6 @@
 {
   "name": "fumo-clip",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Fumo Clip: an open-source clip library and player for OBS replay buffer clips, with per-track audio mixing, trimming and one-click sharing.",
   "main": "src/main.js",
   "license": "MIT",
@@ -13,7 +13,8 @@
     "productName": "Fumo Clip",
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
-      "node_modules/ffprobe-static/**"
+      "node_modules/ffprobe-static/**",
+      "node_modules/sql.js/dist/sql-wasm.wasm"
     ],
     "win": {
       "target": "nsis",
@@ -50,7 +51,8 @@
     "electron-updater": "^6.3.9",
     "ffmpeg-static": "5.2.0",
     "ffprobe-static": "3.1.0",
-    "obs-websocket-js": "5.0.6"
+    "obs-websocket-js": "5.0.6",
+    "sql.js": "^1.12.0"
   },
   "devDependencies": {
     "electron": "33.2.1",

@@ -96,6 +96,15 @@ class Library extends EventEmitter {
     this.db.clips = this.db.clips || {};
     this.db.exeMap = this.db.exeMap || {};
     this.db.categories = Array.isArray(this.db.categories) ? this.db.categories : [];
+    this.db.imported = this.db.imported && typeof this.db.imported === 'object' ? this.db.imported : {};
+  }
+  /** Write the db right now (used before anything re-reads it from disk). */
+  flushDb() {
+    clearTimeout(this._saveT);
+    fs.mkdirSync(path.dirname(this.dbFile), { recursive: true });
+    const tmp = this.dbFile + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(this.db, null, 1));
+    fs.renameSync(tmp, this.dbFile);
   }
   saveDb() {
     clearTimeout(this._saveT);
@@ -201,7 +210,9 @@ class Library extends EventEmitter {
 
   async scan() {
     fs.mkdirSync(this.root, { recursive: true });
+    if (this._saveT && this._dbRoot === this.root) this.flushDb();
     this.loadDb();
+    this._dbRoot = this.root;
     this.clips.clear();
     const files = await this.walk(this.root);
     await Promise.all(files.map((f) => this.buildClip(f)));

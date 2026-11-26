@@ -7,6 +7,7 @@ const { Library, VIDEO_EXT } = require('./library');
 const { ObsLink, FolderWatcher, detectObsConfig } = require('./obs');
 const { foregroundInfo, resolveGame } = require('./game');
 const media = require('./media');
+const importer = require('./importer');
 const { autoUpdater } = require('electron-updater');
 
 protocol.registerSchemesAsPrivileged([
@@ -129,7 +130,9 @@ function pub(c) {
 }
 
 // ---------------- ingest ----------------
+const importingPaths = new Set();
 async function handleNewReplay(file, source) {
+  if (importingPaths.has(path.resolve(file).toLowerCase())) return;
   // Detect the game right away, while it's still the foreground window.
   const info = await foregroundInfo();
   const g = resolveGame(info, lib.db.exeMap);
@@ -535,6 +538,121 @@ handle('app:uninstall', () => {
   quitting = true;
   setTimeout(() => app.quit(), 300);
   return true;
+});
+
+// ---------------- import from other recorders ----------------
+let importJob = null; // { sources, items, cancelled, running }
+function driveRoot(p) {
+  return path.parse(path.resolve(p)).root.toLowerCase();
+}
+function freeBytes(dir) {
+  try {
+    const s = fs.statfsSync(dir);
+    return s.bavail * s.bsize;
+  } catch {
+    return null;
+  }
+}
+handle('import:sources', async () => importer.detectSources({ videosDir: app.getPath('videos'), exclude: [settings.libraryDir, settings.watchDir] }));
+handle('import:pickFolder', async () => {
+  const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'] });
+  if (r.canceled || !r.filePaths[0]) return null;
+  const dir = r.filePaths[0];
+  if (lib.contains(path.join(dir, 'x')) || path.resolve(dir).toLowerCase() === path.resolve(settings.libraryDir).toLowerCase()) {
+    throw new Error('That folder is already your Fumo Clip library');
+  }
+  return { id: 'folder:' + dir, name: path.basename(dir) || dir, dir, note: '', count: null, bytes: null };
+});
+handle('import:scan', async (sources) => {
+  if (importJob && importJob.running) throw new Error('An import is already running');
+  const clips = lib.list();
+  const knownKeys = new Set(clips.map((c) => `${c.size}|${path.basename(c.path).toLowerCase()}`));
+  const knownSizes = new Set(clips.map((c) => `${c.size}|${Math.round(c.created / 1000)}`));
+  const imported = new Set(Object.keys(lib.db.imported || {}));
+  const items = await importer.scan(sources, { root: settings.libraryDir, knownKeys, knownSizes, imported });
+  importJob = { sources, items, cancelled: false, running: false };
+  const fresh = items.filter((i) => !i.duplicate);
+  const games = {};
+  for (const i of fresh) games[i.game] = (games[i.game] || 0) + 1;
+  const bytes = fresh.reduce((n, i) => n + i.size, 0);
+  const crossDrive = fresh.some((i) => driveRoot(i.src) !== driveRoot(settings.libraryDir));
+  return {
+    total: items.length,
+    fresh: fresh.length,
+    duplicates: items.length - fresh.length,
+    bytes,
+    crossBytes: fresh.filter((i) => driveRoot(i.src) !== driveRoot(settings.libraryDir)).reduce((n, i) => n + i.size, 0),
+    crossDrive,
+    free: freeBytes(settings.libraryDir),
+    trims: fresh.filter((i) => i.trim).length,
+    titles: fresh.filter((i) => i.title && !i.title.startsWith(i.game + ' ')).length,
+    games: Object.entries(games).sort((a, b) => b[1] - a[1]).map(([game, n]) => ({ game, n })),
+    organize: settings.organizeByGame,
+    library: settings.libraryDir,
+  };
+});
+handle('import:cancel', () => {
+  if (importJob) importJob.cancelled = true;
+  return true;
+});
+handle('import:start', async (opts) => {
+  if (!importJob || !importJob.items) throw new Error('Scan first');
+  if (importJob.running) throw new Error('An import is already running');
+  const job = importJob;
+  job.running = true;
+  const mode = opts && opts.mode === 'copy' ? 'copy' : 'move';
+  const items = job.items.filter((i) => !i.duplicate);
+  let lastSend = 0;
+  (async () => {
+    let out = { results: [], failed: [] };
+    try {
+      out = await importer.run(items, {
+        root: settings.libraryDir,
+        mode,
+        organize: settings.organizeByGame,
+        isCancelled: () => job.cancelled,
+        beforeWrite: (dest) => importingPaths.add(path.resolve(dest).toLowerCase()),
+        onItem: (done, total, bytesDone, bytesTotal, it) => {
+          const now = Date.now();
+          if (now - lastSend > 120 || done === total) {
+            lastSend = now;
+            send('import:progress', { done, total, bytesDone, bytesTotal, current: it.title, game: it.game });
+          }
+        },
+      });
+      // bring over what Moments knew: date, trim, favourite, tags
+      lib.db.imported = lib.db.imported || {};
+      for (const { item, dest } of out.results) {
+        const id = lib.idFor(dest);
+        const m = lib.meta(id);
+        m.created = item.created;
+        if (!settings.organizeByGame) m.game = item.game;
+        if (item.trim) m.trim = item.trim;
+        if (item.favorite) m.favorite = true;
+        if (item.tags && item.tags.length) {
+          m.tags = [...new Set([...(m.tags || []), ...item.tags])];
+          for (const t of item.tags) if (!lib.db.categories.includes(t)) lib.db.categories.push(t);
+        }
+        lib.db.imported[item.src.toLowerCase()] = id;
+      }
+      lib.flushDb();
+      await lib.rescanQuiet();
+    } catch (e) {
+      out.failed.push({ item: null, error: String((e && e.message) || e) });
+    } finally {
+      job.running = false;
+      setTimeout(() => importingPaths.clear(), 5000);
+    }
+    send('import:done', {
+      imported: out.results.length,
+      failed: out.failed.length,
+      errors: out.failed.slice(0, 5).map((f) => (f.item ? f.item.title + ': ' : '') + f.error),
+      cancelled: job.cancelled,
+      mode,
+    });
+    send('library:changed');
+  })();
+  return { started: items.length };
 });
 
 handle('obs:status', () => obs.state);

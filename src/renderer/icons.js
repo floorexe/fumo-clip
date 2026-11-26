@@ -26,6 +26,7 @@ const ICONS = {
   headphones: '<path d="M4 15v-3a8 8 0 0116 0v3"/><rect x="3" y="14" width="4" height="6" rx="1.5"/><rect x="17" y="14" width="4" height="6" rx="1.5"/>',
   layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>',
   gamepad: '<path d="M6 8h12a4 4 0 014 4v1a4 4 0 01-7 2.6L14 15h-4l-1 .6A4 4 0 012 13v-1a4 4 0 014-4z"/><path d="M8 11v3M6.5 12.5h3"/><circle cx="16" cy="11.5" r=".8" fill="currentColor"/><circle cx="17.5" cy="13.5" r=".8" fill="currentColor"/>',
+  import: '<path d="M12 3v12m0 0l-4-4m4 4l4-4"/><path d="M5 15v4a2 2 0 002 2h10a2 2 0 002-2v-4"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   tag: '<path d="M3 12V4h8l10 10-8 8z"/><circle cx="7.5" cy="8.5" r="1.5"/>',
   chev: '<path d="M9 6l6 6-6 6"/>',
