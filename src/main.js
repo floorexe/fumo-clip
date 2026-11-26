@@ -212,6 +212,7 @@ function registerProtocol() {
 }
 
 // ---------------- window / tray ----------------
+const TITLEBAR_H = 59;
 function createWindow(show = true) {
   win = new BrowserWindow({
     width: 1400,
@@ -223,6 +224,10 @@ function createWindow(show = true) {
     title: 'Fumo Clip',
     icon: ICON,
     autoHideMenuBar: true,
+    // no grey Windows title bar: the app's own top bar is the title bar, with the
+    // minimise / maximise / close buttons drawn on top in the theme's colours
+    titleBarStyle: 'hidden',
+    titleBarOverlay: { color: '#0e0f13', symbolColor: '#e8eaf0', height: TITLEBAR_H },
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
   win.loadURL('clipdeck://app/index.html');
@@ -498,6 +503,38 @@ handle('dialog:image', async () => {
   fs.copyFileSync(src, dest);
   for (const f of fs.readdirSync(dir)) if (path.join(dir, f) !== dest && f.startsWith('bg-')) fs.rmSync(path.join(dir, f), { force: true });
   return dest;
+});
+
+// ---------------- window chrome / app info ----------------
+const HEX = /^#[0-9a-f]{6}$/i;
+handle('window:titlebar', (o) => {
+  if (!win || win.isDestroyed() || !o || !HEX.test(o.color) || !HEX.test(o.symbolColor)) return false;
+  try {
+    win.setTitleBarOverlay({ color: o.color, symbolColor: o.symbolColor, height: TITLEBAR_H });
+  } catch {}
+  return true;
+});
+const uninstallerPath = () => path.join(path.dirname(app.getPath('exe')), 'Uninstall Fumo Clip.exe');
+handle('app:paths', () => ({
+  installed: app.isPackaged,
+  install: app.isPackaged ? path.dirname(app.getPath('exe')) : null,
+  data: USER,
+  library: settings.libraryDir,
+  canUninstall: app.isPackaged && fs.existsSync(uninstallerPath()),
+}));
+handle('shell:openPath', (p) => {
+  const allowed = [app.isPackaged ? path.dirname(app.getPath('exe')) : null, USER, settings.libraryDir].filter(Boolean);
+  if (!allowed.some((a) => path.resolve(a) === path.resolve(p))) return false;
+  return shell.openPath(p);
+});
+// Runs the normal Windows uninstaller. It removes the app only, never your clips.
+handle('app:uninstall', () => {
+  const exe = uninstallerPath();
+  if (!app.isPackaged || !fs.existsSync(exe)) throw new Error('The uninstaller only exists in the installed app');
+  require('child_process').spawn(exe, ['/currentuser', '--fumo-confirmed'], { detached: true, stdio: 'ignore' }).unref();
+  quitting = true;
+  setTimeout(() => app.quit(), 300);
+  return true;
 });
 
 handle('obs:status', () => obs.state);

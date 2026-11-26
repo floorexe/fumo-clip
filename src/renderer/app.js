@@ -719,6 +719,7 @@ async function openSettings() {
       <div class="set-row"><label></label><label class="toggle"><input type="checkbox" id="s-login" ${s.launchAtLogin ? 'checked' : ''}><span>Start with Windows (installed version only)</span></label></div>
       <div class="set-row"><label></label><label class="toggle"><input type="checkbox" id="s-autoupd" ${s.autoUpdate !== false ? 'checked' : ''}><span>Update automatically (downloads in the background, installs on restart)</span></label></div>
       <div class="set-row"><label>Version</label><span id="upd-status" class="set-note" style="margin:0;flex:1"></span><button class="btn" id="s-upd-check">Check now</button><button class="btn primary hidden" id="s-upd-install">Restart &amp; update</button></div>
+      <div id="s-paths"></div>
       <div class="set-row"><label></label><button class="btn" id="s-cache">Clear thumbnail & audio cache</button></div>
     </div>
   </div>
@@ -764,6 +765,29 @@ async function openSettings() {
   };
   $('#s-upd-install', el).onclick = () => api.invoke('update:install');
   api.invoke('update:status').then((u) => ((S.update = u), renderUpdateStatus()));
+  api.invoke('app:paths').then((p) => {
+    const box = $('#s-paths', el);
+    if (!box) return;
+    const row = (label, dir, note) =>
+      dir ? `<div class="set-row"><label>${label}</label><code class="path" title="${esc(dir)}">${esc(dir)}</code><button class="btn ghost sm" data-open="${esc(dir)}">Open</button></div>${note ? `<div class="set-note" style="margin-left:158px">${note}</div>` : ''}` : '';
+    box.innerHTML =
+      row('App installed in', p.install) +
+      (p.installed ? '' : '<div class="set-row"><label>App installed in</label><span class="set-note" style="margin:0">Running from source</span></div>') +
+      row('Settings & cache', p.data) +
+      row('Your clips', p.library, 'Never touched by installing, updating or uninstalling.') +
+      `<div class="set-row"><label></label><button class="btn danger" id="s-uninstall" ${p.canUninstall ? '' : 'disabled title="Only in the installed app"'}>${icon('trash')}Uninstall Fumo Clip…</button></div>`;
+    $$('[data-open]', box).forEach((b) => (b.onclick = () => api.invoke('shell:openPath', b.dataset.open)));
+    const un = $('#s-uninstall', box);
+    if (un)
+      un.onclick = async () => {
+        const ok = await confirmModal(
+          'Uninstall Fumo Clip?',
+          `This removes the Fumo Clip app only. Your videos in ${p.library} are NOT deleted, and their favourites, trims, markers and categories stay with them.`,
+          'Uninstall'
+        );
+        if (ok) await call('app:uninstall');
+      };
+  });
   $('#s-cache', el).onclick = async () => {
     await call('cache:clear');
     S.clips.forEach((c) => (c.thumb = null));

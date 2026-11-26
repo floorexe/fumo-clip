@@ -118,6 +118,11 @@ function applyTheme(id, custom) {
   root.dataset.theme = id === 'custom' || THEMES[id] ? id : 'midnight';
   root.classList.toggle('patterned', vars.p1 !== 'transparent');
   try {
+    if (window.api && /^#[0-9a-f]{6}$/i.test(vars.bg) && /^#[0-9a-f]{6}$/i.test(vars.text)) {
+      window.api.invoke('window:titlebar', { color: vars.bg, symbolColor: vars.text });
+    }
+  } catch {}
+  try {
     localStorage.theme = root.dataset.theme;
   } catch {}
 }
