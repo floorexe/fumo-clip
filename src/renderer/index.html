@@ -18,13 +18,14 @@
         <button class="nav-item" data-view="exports"><i data-icon="export"></i><span>Exports</span><em id="count-exp">0</em></button>
       </nav>
       <div class="side-scroll">
-        <div class="nav-head"><span>Games</span><small title="Ctrl-click or Shift-click games to select all their clips">Ctrl-click to select</small></div>
+        <div class="nav-head fold" data-fold="games"><button class="fold-btn" title="Show / hide games"><i data-icon="chev"></i><span>Games</span><em id="games-count"></em></button><small title="Ctrl-click or Shift-click games to select all their clips">Ctrl-click to select</small></div>
         <nav id="games"></nav>
-        <div class="nav-head"><span>Categories</span><button id="btn-new-cat" class="icon-btn tiny" title="New category"><i data-icon="plus"></i></button></div>
+        <div class="nav-head fold" data-fold="cats"><button class="fold-btn" title="Show / hide categories"><i data-icon="chev"></i><span>Categories</span><em id="cats-count"></em></button><button id="btn-new-cat" class="icon-btn tiny" title="New category"><i data-icon="plus"></i></button></div>
         <nav id="cats"></nav>
       </div>
       <div class="sidebar-foot">
         <div id="obs-pill" class="obs-pill" title="OBS connection"><span class="dot"></span><span class="txt">OBS</span></div>
+        <button id="btn-report" class="icon-btn" title="Report a problem"><i data-icon="help"></i></button>
         <button id="btn-settings" class="icon-btn" title="Settings"><i data-icon="gear"></i></button>
       </div>
     </aside>
@@ -141,6 +142,7 @@
                 <div class="tl-overlay">
                   <div class="tl-dim left"></div>
                   <div class="tl-dim right"></div>
+                  <div id="tl-overlaps"></div>
                   <div id="tl-markers"></div>
                   <div class="tl-handle in" title="Drag to set the start (I)"></div>
                   <div class="tl-handle out" title="Drag to set the end (O)"></div>

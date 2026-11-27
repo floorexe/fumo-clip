@@ -18,6 +18,7 @@ function fmtDur(s, tenths = false) {
   return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
 }
 function fmtSize(b) {
+  if (b > 1024 ** 4) return (b / 1024 ** 4).toFixed(2) + ' TB';
   if (b > 1024 ** 3) return (b / 1024 ** 3).toFixed(2) + ' GB';
   if (b > 1024 ** 2) return (b / 1024 ** 2).toFixed(1) + ' MB';
   return Math.round(b / 1024) + ' KB';
@@ -82,6 +83,7 @@ function upsert(c) {
 // ============================================================ boot
 async function boot() {
   hydrateIcons();
+  initFolds();
   S.settings = await call('settings:get');
   applyTheme(S.settings.theme || 'midnight', S.settings.customTheme || undefined);
   applyBackground(S.settings.bgImage);
@@ -172,9 +174,11 @@ function renderSidebar() {
     .join('');
   $$('#nav .nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === S.view));
   $('#game-list').innerHTML = list.map((g) => `<option value="${esc(g.name)}">`).join('');
+  $('#games-count').textContent = list.length || '';
   const counts = {};
   for (const c of S.clips) for (const t of c.tags || []) counts[t] = (counts[t] || 0) + 1;
   const cats = [...new Set([...(S.cats || []), ...Object.keys(counts)])];
+  $('#cats-count').textContent = cats.length || '';
   $('#cats').innerHTML = cats.length
     ? cats
         .map(
@@ -420,7 +424,8 @@ function wireLibrary() {
     await call('obs:save');
     toast('Saving replay…');
   };
-  $('#btn-settings').onclick = openSettings;
+  $('#btn-settings').onclick = () => openSettings();
+  $('#btn-report').onclick = openReport;
   $('#obs-pill').onclick = async () => {
     if (S.obs.status === 'connected') await call('obs:toggleReplay');
     else openSettings('obs');
@@ -688,6 +693,7 @@ const SETTINGS_TABS = [
   ['app', 'App', 'gear'],
   ['updates', 'Updates', 'refresh'],
   ['storage', 'Storage', 'folder'],
+  ['help', 'Help', 'help'],
 ];
 async function openSettings(tab) {
   const s = await call('settings:get');
@@ -739,7 +745,12 @@ async function openSettings(tab) {
       <div class="set-row"><label></label><label class="toggle"><input type="checkbox" id="s-autoupd" ${s.autoUpdate !== false ? 'checked' : ''}><span>Update automatically (downloads in the background, installs on restart)</span></label></div>
       <div class="set-row"><label>Version</label><span id="upd-status" class="set-note" style="margin:0;flex:1"></span><button class="btn" id="s-upd-check">Check now</button><button class="btn primary hidden" id="s-upd-install">Restart &amp; update</button></div>
     </div>
+    <div class="set-section" data-tab="help"><h3>Help</h3>
+      <div class="set-note">Something broken or confusing? Send a report: it opens a filled-in issue on the Fumo Clip GitHub page, with the app version and recent errors (your username and folders blanked out).</div>
+      <div class="set-row"><button class="btn primary" id="s-report">Report a problem…</button></div>
+    </div>
     <div class="set-section" data-tab="storage"><h3>Storage</h3>
+      <div id="s-disk" class="disk"></div>
       <div id="s-paths"></div>
       <div class="set-row"><label></label><button class="btn" id="s-cache">Clear thumbnail & audio cache</button></div>
     </div>
@@ -762,7 +773,18 @@ async function openSettings(tab) {
     const b = e.target.closest('[data-tab]');
     if (b) showTab(b.dataset.tab);
   });
-  showTab(tab || localStorage.settingsTab || 'look');
+  const origShow = showTab;
+  let diskDone = false;
+  const showTab2 = (id) => {
+    origShow(id);
+    if (id === 'storage' && !diskDone) (diskDone = true), renderDiskBar($('#s-disk', el));
+  };
+  $('.set-nav', el).addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tab]');
+    if (b) showTab2(b.dataset.tab);
+  });
+  $('#s-report', el).onclick = () => (m.close(), openReport());
+  showTab2(tab || localStorage.settingsTab || 'look');
   $('#s-mode', el).value = s.ingestMode;
   el.addEventListener('click', (e) => {
     const sw = e.target.closest('.theme-sw');
@@ -950,7 +972,8 @@ async function setVideoSrc(url, token, attempt = 0) {
   }
   stageMsg('');
   renderTimeline();
-  video.currentTime = S.trim && S.trim.in < video.duration ? S.trim.in : 0;
+  video.currentTime = P.pendingSeek != null && P.pendingSeek < video.duration ? P.pendingSeek : S.trim && S.trim.in < video.duration ? S.trim.in : 0;
+  P.pendingSeek = null;
   video.play().catch(() => {});
   startRaf();
 }
@@ -1146,6 +1169,7 @@ function renderTimeline() {
   renderMarkers();
   renderRuler();
   $('#c-cut').disabled = !tr;
+  renderOverlaps();
 }
 function startRaf() {
   cancelAnimationFrame(P.raf);
@@ -1195,7 +1219,8 @@ function updateClipLane() {
   const el = $('#tl-rows .clip-name');
   if (!el || !S.current) return;
   const tr = S.trim;
-  el.innerHTML = esc(S.current.title) + (tr ? ` <span class="muted">· trimmed ${fmtDur(tr.in, true)} – ${fmtDur(tr.out, true)} (${fmtDur(tr.out - tr.in, true)})</span>` : ` <span class="muted">· Shift-drag or press I / O to trim</span>`);
+  const nOv = (P.overlaps || []).length;
+  el.innerHTML = esc(S.current.title) + (nOv ? ` <span class="ovl-note">· overlaps ${nOv} other clip${nOv === 1 ? '' : 's'}</span>` : '') + (tr ? ` <span class="muted">· trimmed ${fmtDur(tr.in, true)} – ${fmtDur(tr.out, true)} (${fmtDur(tr.out - tr.in, true)})</span>` : ` <span class="muted">· Shift-drag or press I / O to trim</span>`);
 }
 
 // ---- timeline zoom
@@ -1620,6 +1645,8 @@ function wirePlayer() {
     if (e.offsetY > lanes.clientHeight && e.target === lanes) return; // horizontal scrollbar
     const mk = e.target.closest('.tl-marker');
     if (mk) return seek(+mk.dataset.t);
+    const ov = e.target.closest('[data-ovl]');
+    if (ov) return overlapMenu(e, +ov.dataset.ovl);
     lanes.setPointerCapture(e.pointerId);
     const h = e.target.closest('.tl-handle');
     const t = timeAt(e.clientX);
@@ -2601,6 +2628,158 @@ document.addEventListener('click', (e) => {
     renderUpdateBanner();
     if (u.state === 'ready') toast('The update installs next time Fumo Clip restarts');
   }
+});
+
+// ============================================================ sidebar dropdowns (Games / Categories)
+function initFolds() {
+  for (const head of $$('.nav-head.fold')) {
+    const key = 'fold-' + head.dataset.fold;
+    try {
+      head.classList.toggle('closed', localStorage[key] === '1');
+    } catch {}
+    $('.fold-btn', head).addEventListener('click', () => {
+      const closed = head.classList.toggle('closed');
+      try {
+        localStorage[key] = closed ? '1' : '0';
+      } catch {}
+    });
+  }
+}
+
+// ============================================================ disk usage bar (Settings → Storage)
+async function renderDiskBar(box) {
+  if (!box) return;
+  box.innerHTML = '<div class="hint">Measuring…</div>';
+  let d;
+  try {
+    d = await call('storage:info');
+  } catch {
+    return (box.innerHTML = '');
+  }
+  if (!d.total) return (box.innerHTML = `<div class="hint">Your clips use ${fmtSize(d.clips)}.</div>`);
+  const other = Math.max(0, d.total - d.free - d.clips - d.cache);
+  const pc = (n) => Math.max(0, (n / d.total) * 100).toFixed(2) + '%';
+  const low = d.free / d.total < 0.1;
+  box.innerHTML = `
+    <div class="disk-head"><b>Drive ${esc(d.drive)}</b><span>${fmtSize(d.free)} free of ${fmtSize(d.total)}</span></div>
+    <div class="disk-bar">
+      <div class="d-clips" style="width:${pc(d.clips)}" title="Your clips: ${fmtSize(d.clips)}"></div>
+      <div class="d-cache" style="width:${pc(d.cache)}" title="Fumo Clip cache: ${fmtSize(d.cache)}"></div>
+      <div class="d-other" style="width:${pc(other)}" title="Everything else: ${fmtSize(other)}"></div>
+    </div>
+    <div class="disk-legend">
+      <span><i class="d-clips"></i>Your clips <b>${fmtSize(d.clips)}</b> <small>(${d.clipCount})</small></span>
+      <span><i class="d-cache"></i>Cache <b>${fmtSize(d.cache)}</b></span>
+      <span><i class="d-other"></i>Everything else <b>${fmtSize(other)}</b></span>
+      <span><i class="d-free"></i>Free <b>${fmtSize(d.free)}</b></span>
+    </div>
+    ${low ? `<div class="set-note warn">Your drive is almost full. Select clips and use <b>Compress</b> or <b>Cut to trim</b> to free space, then empty the Recycle Bin.</div>` : ''}`;
+}
+
+// ============================================================ overlapping clips on the timeline
+// A clip's saved time is when it ENDED (OBS and SteelSeries both stamp the save moment).
+function clipRange(c) {
+  if (!c || !(c.duration > 0) || !c.created) return null;
+  const end = c.created / 1000;
+  return [end - c.duration, end];
+}
+function overlapsFor(c) {
+  const r = clipRange(c);
+  if (!r) return [];
+  const out = [];
+  for (const o of S.clips) {
+    if (o.id === c.id || o.isExport) continue;
+    const q = clipRange(o);
+    if (!q) continue;
+    const s = Math.max(r[0], q[0]);
+    const e = Math.min(r[1], q[1]);
+    if (e - s >= 1) out.push({ clip: o, from: s - r[0], to: e - r[0], otherAt: s - q[0] });
+  }
+  return out.sort((a, b) => a.from - b.from);
+}
+function renderOverlaps() {
+  const box = $('#tl-overlaps');
+  if (!box) return;
+  const c = S.current && (byId(S.current.id) || S.current);
+  const list = c ? overlapsFor({ ...c, duration: dur() || c.duration }) : [];
+  P.overlaps = list;
+  updateClipLane();
+  box.innerHTML = list
+    .map(
+      (o, i) => `<div class="tl-ovl" style="left:${pct(o.from)}%;width:${Math.max(0.3, pct(o.to) - pct(o.from))}%">
+        <button class="tl-ovl-tag" data-ovl="${i}" title="The same moment is also in “${esc(o.clip.title)}” (${fmtDur(o.from)}–${fmtDur(o.to)}, about ${Math.round(o.to - o.from)}s). Click for options.">${icon('layers')}<span>also in ${esc(o.clip.title)}</span></button>
+      </div>`
+    )
+    .join('');
+}
+function overlapMenu(e, i) {
+  const o = P.overlaps && P.overlaps[i];
+  if (!o) return;
+  const d = dur();
+  const items = [{ label: `Open “${o.clip.title}” at this moment`, icon: 'play2', run: () => ((P.pendingSeek = o.otherAt), openClip(o.clip.id)) }];
+  if (o.to < d - 0.5) items.push({ label: 'Trim: start after the overlap', icon: 'scissors', run: () => setTrim(o.to, S.trim ? Math.max(S.trim.out, o.to + 0.5) : d) });
+  if (o.from > 0.5) items.push({ label: 'Trim: end before the overlap', icon: 'scissors', run: () => setTrim(S.trim ? Math.min(S.trim.in, o.from - 0.5) : 0, o.from) });
+  items.push({ label: 'Jump to the start of the overlap', icon: 'next', run: () => seek(o.from) });
+  showCtx(e, items);
+}
+
+// ============================================================ report a problem
+async function openReport() {
+  let info = {};
+  try {
+    info = await call('report:info');
+  } catch {}
+  const details = () =>
+    [
+      `**Fumo Clip** ${info.version || '?'}${info.installed ? '' : ' (from source)'} · ${info.os || ''} · Electron ${info.electron || ''}`,
+      `Clips: ${info.clips ?? '?'} · audio tracks per clip: ${JSON.stringify(info.audioTracks || {})}`,
+      `OBS link: ${info.obs ? info.obs.link : '?'} · replay buffer: ${info.obs && info.obs.replayBuffer ? 'on' : 'off'} · folder watch: ${info.obs && info.obs.watchFolder ? 'on' : 'off'} · theme: ${info.theme || '?'}`,
+      '',
+      info.errors && info.errors.length ? 'Recent errors:\n```\n' + info.errors.join('\n') + '\n```' : 'No recent errors were logged.',
+    ].join('\n');
+  const m = modal(
+    `<h2>Report a problem</h2><div class="body">
+      <p>Describe what went wrong. This opens a new issue on the Fumo Clip GitHub page in your browser, already filled in. You need a GitHub account to post it, and nothing is sent until you press <b>Submit</b> there.</p>
+      <div class="field"><label>Short title</label><input id="rp-title" placeholder="e.g. Share window doesn't open in fullscreen" spellcheck="true"></div>
+      <div class="field"><label>What happened? What did you expect?</label><textarea id="rp-text" rows="6" placeholder="Steps to make it happen, what you saw, what you expected…" spellcheck="true"></textarea></div>
+      <label class="toggle"><input type="checkbox" id="rp-info" checked><span>Include app details and recent errors (your username and folders are blanked out)</span></label>
+      <details class="rp-preview"><summary>See exactly what will be included</summary><pre id="rp-pre"></pre></details>
+    </div>
+    <div class="foot"><button class="btn ghost" data-x>Cancel</button><button class="btn" id="rp-copy">${icon('copy')}Copy text</button><button class="btn primary" id="rp-go">Open on GitHub</button></div>`,
+    { wide: true }
+  );
+  const el = m.el;
+  const body = () => {
+    const text = $('#rp-text', el).value.trim() || '(no description)';
+    return $('#rp-info', el).checked ? `${text}\n\n---\n${details()}` : text;
+  };
+  const refresh = () => ($('#rp-pre', el).textContent = body());
+  ['input', 'change'].forEach((ev) => el.addEventListener(ev, refresh));
+  el.addEventListener('keydown', (e) => e.stopPropagation(), true);
+  refresh();
+  $('[data-x]', el).onclick = m.close;
+  $('#rp-copy', el).onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(`${$('#rp-title', el).value}\n\n${body()}`);
+      toast('Copied: paste it anywhere (Discord, GitHub…)', 'good');
+    } catch {
+      toast("Couldn't copy", 'error');
+    }
+  };
+  $('#rp-go', el).onclick = async () => {
+    await call('report:open', $('#rp-title', el).value.trim() || 'Problem report', body());
+    m.close();
+    toast('Opened the report page in your browser', 'good');
+  };
+  setTimeout(() => $('#rp-title', el).focus(), 0);
+}
+
+// UI errors go into the same log used for reports
+window.addEventListener('error', (e) => api.invoke('log:error', 'window', (e.error && e.error.stack) || e.message).catch(() => {}));
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e.reason;
+  if (r && /Error invoking remote method/.test(String(r.message || r))) return; // already shown as a toast
+  api.invoke('log:error', 'promise', (r && r.stack) || String(r)).catch(() => {});
 });
 
 boot();

@@ -1,6 +1,6 @@
 {
   "name": "fumo-clip",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "Fumo Clip: an open-source clip library and player for OBS replay buffer clips, with per-track audio mixing, trimming and one-click sharing.",
   "main": "src/main.js",
   "license": "MIT",

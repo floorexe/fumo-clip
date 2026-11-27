@@ -9,6 +9,41 @@ const { foregroundInfo, resolveGame } = require('./game');
 const media = require('./media');
 const importer = require('./importer');
 const { autoUpdater } = require('electron-updater');
+const os = require('os');
+
+// ---------------- error log (for "Report a problem") ----------------
+// Keeps the last errors in memory and in a small file, with personal paths blanked out.
+const recentErrors = [];
+function scrub(text) {
+  let t = String(text);
+  const home = os.homedir();
+  for (const h of [home, home.replace(/\\/g, '/'), home.replace(/\\/g, '\\\\')]) t = t.split(h).join('~');
+  let user = '';
+  try {
+    user = os.userInfo().username;
+  } catch {}
+  if (user && user.length > 2) t = t.replace(new RegExp(user.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '<user>');
+  return t;
+}
+function logError(where, err) {
+  const line = `${new Date().toISOString()} [${where}] ${scrub((err && err.stack) || err).slice(0, 1500)}`;
+  recentErrors.push(line);
+  if (recentErrors.length > 40) recentErrors.shift();
+  try {
+    const dir = path.join(app.getPath('userData'), 'logs');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'errors.log');
+    if (fs.existsSync(file) && fs.statSync(file).size > 256 * 1024) fs.renameSync(file, file + '.old');
+    fs.appendFileSync(file, line + '\n');
+  } catch {}
+}
+const origConsoleError = console.error;
+console.error = (...a) => {
+  logError('main', a.map((x) => (x && x.stack) || (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(' '));
+  origConsoleError(...a);
+};
+process.on('uncaughtException', (e) => logError('crash', e));
+process.on('unhandledRejection', (e) => logError('promise', e));
 
 protocol.registerSchemesAsPrivileged([
   { scheme: 'clipdeck', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } },
@@ -757,6 +792,78 @@ handle('import:start', async (opts) => {
     send('library:changed');
   })();
   return { started: items.length };
+});
+
+// ---------------- disk usage (Settings → Storage) ----------------
+async function folderSize(dir) {
+  let total = 0;
+  const walk = async (d) => {
+    let ents = [];
+    try {
+      ents = await fs.promises.readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of ents) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) await walk(p);
+      else
+        try {
+          total += (await fs.promises.stat(p)).size;
+        } catch {}
+    }
+  };
+  await walk(dir);
+  return total;
+}
+handle('storage:info', async () => {
+  const dir = settings.libraryDir;
+  let total = null;
+  let free = null;
+  try {
+    const s = fs.statfsSync(dir);
+    total = s.blocks * s.bsize;
+    free = s.bavail * s.bsize;
+  } catch {}
+  const list = lib.list();
+  return {
+    drive: path.parse(path.resolve(dir)).root.replace(/\\$/, ''),
+    total,
+    free,
+    clips: list.reduce((n, c) => n + (c.size || 0), 0),
+    clipCount: list.length,
+    cache: await folderSize(lib.cacheDir),
+  };
+});
+
+// ---------------- report a problem ----------------
+handle('log:error', (where, msg) => (logError('ui ' + String(where).slice(0, 20), String(msg).slice(0, 2000)), true));
+handle('report:info', () => ({
+  version: app.getVersion(),
+  os: `${os.type()} ${os.release()} (${os.arch()})`,
+  electron: process.versions.electron,
+  installed: app.isPackaged,
+  clips: lib.list().length,
+  audioTracks: (() => {
+    const counts = {};
+    for (const c of lib.list()) {
+      const n = c.probe && c.probe.audioTracks ? c.probe.audioTracks.length : null;
+      if (n != null) counts[n] = (counts[n] || 0) + 1;
+    }
+    return counts;
+  })(),
+  obs: { link: settings.obsEnabled ? obs.state.status : 'off', replayBuffer: !!obs.state.replayActive, watchFolder: !!settings.watchEnabled },
+  theme: settings.theme,
+  errors: recentErrors.slice(-15),
+}));
+handle('report:open', (title, body) => {
+  const repo = (require('../package.json').homepage || 'https://github.com/floorexe/fumo-clip').replace(/\/$/, '');
+  let b = scrub(String(body || ''));
+  // browsers and GitHub cope with roughly 8 KB of URL
+  while (encodeURIComponent(b).length > 6500) b = b.slice(0, Math.floor(b.length * 0.85)) + '\n…(trimmed)';
+  const url = `${repo}/issues/new?title=${encodeURIComponent(scrub(String(title || 'Problem report')).slice(0, 120))}&body=${encodeURIComponent(b)}`;
+  shell.openExternal(url);
+  return true;
 });
 
 handle('obs:status', () => obs.state);
