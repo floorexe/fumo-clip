@@ -124,7 +124,7 @@ function detectEncoder(codec = 'h264') {
 const QUALITY_CQ = { best: 16, high: 19, balanced: 23, small: 28 };
 
 function videoEncodeArgs(enc, kbps, quality) {
-  const cq = QUALITY_CQ[quality] || QUALITY_CQ.high;
+  const cq = typeof quality === 'number' ? quality : QUALITY_CQ[quality] || QUALITY_CQ.high;
   const rate = (extra = []) => ['-b:v', kbps + 'k', '-maxrate', kbps + 'k', '-bufsize', kbps * 2 + 'k', ...extra];
   if (enc.endsWith('_nvenc')) {
     const a = ['-c:v', enc, '-preset', 'p5', '-tune', 'hq', '-pix_fmt', 'yuv420p'];
@@ -340,4 +340,52 @@ function waveform(file, index, buckets = 1600) {
   });
 }
 
-module.exports = { FFMPEG, FFPROBE, run, probe, thumbnail, extractAudio, makeProxy, exportClip, planExport, combineClips, waveform, detectEncoder };
+/**
+ * Re-encode a clip in place-ready form (used by Compress and Cut to trim). Every audio track is kept
+ * untouched; only the video is re-encoded (or copied for a fast cut).
+ * o: { input, output, start?, end?, codec: 'h264'|'hevc', cq (number), height (0 = keep), copyVideo, signal }
+ */
+async function reencodeClip(o, onProgress) {
+  const cut = o.start != null && o.end != null;
+  const len = cut ? Math.max(0.1, o.end - o.start) : Math.max(0.1, o.duration || 0.1);
+  const codec = o.codec === 'hevc' ? 'hevc' : 'h264';
+  const build = (enc, audio) => {
+    const args = ['-y', '-hide_banner'];
+    if (cut) args.push('-ss', o.start.toFixed(3), '-to', o.end.toFixed(3));
+    args.push('-i', o.input, '-map', '0:v:0', '-map', '0:a?', '-map_metadata', '0');
+    if (o.copyVideo) args.push('-c:v', 'copy');
+    else {
+      if (o.height) args.push('-vf', 'scale=-2:' + o.height);
+      args.push(...videoEncodeArgs(enc, null, o.cq));
+      if (codec === 'hevc' && enc !== 'libx265') args.push('-tag:v', 'hvc1'); // so Windows/players recognise it in mp4
+    }
+    args.push(...(audio === 'copy' ? ['-c:a', 'copy'] : ['-c:a', 'aac', '-b:a', '192k']));
+    args.push('-movflags', '+faststart', o.output);
+    return args;
+  };
+  const progress = (s) => {
+    const m = /time=(\d+):(\d+):(\d+\.?\d*)/.exec(s);
+    if (m && onProgress) onProgress(Math.min(1, (+m[1] * 3600 + +m[2] * 60 + +m[3]) / len));
+  };
+  const enc = o.copyVideo ? null : await detectEncoder(codec);
+  const attempts = [];
+  if (o.copyVideo) attempts.push([null, 'copy'], [null, 'aac']);
+  else attempts.push([enc, 'copy'], [enc, 'aac']);
+  if (!o.copyVideo && enc !== CPU[codec]) attempts.push([CPU[codec], 'copy']);
+  let lastErr;
+  for (const [e, audio] of attempts) {
+    try {
+      await run(FFMPEG, build(e, audio), { onStderr: progress, signal: o.signal });
+      return { encoder: e || 'copy', audio };
+    } catch (err) {
+      lastErr = err;
+      if (o.signal && o.signal.aborted) throw err;
+      try {
+        fs.rmSync(o.output, { force: true });
+      } catch {}
+    }
+  }
+  throw lastErr;
+}
+
+module.exports = { FFMPEG, FFPROBE, run, probe, thumbnail, extractAudio, makeProxy, exportClip, planExport, combineClips, reencodeClip, waveform, detectEncoder };

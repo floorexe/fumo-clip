@@ -116,6 +116,7 @@ function pub(c) {
     trim: c.trim,
     markers: c.markers || [],
     tags: c.tags || [],
+    compressed: (lib.db.clips[c.id] || {}).compressed || null,
     duration: p.duration || 0,
     width: p.width || 0,
     height: p.height || 0,
@@ -333,6 +334,15 @@ function shareOptions(o) {
  * Runs one temporary render. Same key as the running one: wait for it. A different key: cancel the
  * old one. A finished key: reuse the file. Returns the output path, or null if it was cancelled.
  */
+/** Delete a temp folder; if Windows still has a file in it open (ffmpeg just stopped), try again shortly. */
+function removeLater(dir, tries = 10) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+  } catch {
+    if (tries > 0) setTimeout(() => removeLater(dir, tries - 1), 500);
+  }
+}
+
 async function runShareJob(key, fileName, requestId, work) {
   const cached = shareCache.get(key);
   if (cached && fs.existsSync(cached)) {
@@ -354,7 +364,7 @@ async function runShareJob(key, fileName, requestId, work) {
       shareCache.set(key, output);
       return output;
     } catch (e) {
-      fs.rmSync(path.dirname(output), { recursive: true, force: true });
+      removeLater(path.dirname(output));
       if (ac.signal.aborted) return null;
       throw e;
     } finally {
@@ -538,6 +548,100 @@ handle('app:uninstall', () => {
   quitting = true;
   setTimeout(() => app.quit(), 300);
   return true;
+});
+
+// ---------------- compress / cut to trim (rewrites clip files to save space) ----------------
+const COMPRESS_CQ = { high: 22, balanced: 26, small: 30 };
+let procJob = null;
+handle('process:cancel', () => {
+  if (procJob) {
+    procJob.cancelled = true;
+    if (procJob.ac) procJob.ac.abort();
+  }
+  return true;
+});
+handle('process:start', async (req) => {
+  if (procJob && procJob.running) throw new Error('Already working on some clips');
+  const op = req.op === 'cut' ? 'cut' : 'compress';
+  const opts = req.opts || {};
+  const list = (req.ids || []).map((id) => lib.clips.get(id)).filter(Boolean);
+  const job = { cancelled: false, running: true, ac: null };
+  procJob = job;
+  const removeOriginal = opts.originals === 'delete' ? (p) => fs.promises.unlink(p) : (p) => shell.trashItem(p);
+  (async () => {
+    const sum = { op, done: 0, skipped: [], failed: [], notes: [], before: 0, after: 0, cancelled: false };
+    for (let i = 0; i < list.length && !job.cancelled; i++) {
+      const clip = list[i];
+      const tmp = path.join(path.dirname(clip.path), '.' + path.basename(clip.path, path.extname(clip.path)) + '.fumo-tmp.mp4');
+      const report = (f) => send('process:progress', { index: i, total: list.length, title: clip.title, progress: f, saved: sum.before - sum.after });
+      report(0);
+      try {
+        const p = await lib.ensureProbe(clip);
+        let start = null;
+        let end = null;
+        if (op === 'cut') {
+          if (!clip.trim) {
+            sum.skipped.push(`${clip.title}: has no trim`);
+            continue;
+          }
+          start = clip.trim.in;
+          end = Math.min(clip.trim.out, p.duration || clip.trim.out);
+        }
+        job.ac = new AbortController();
+        await media.reencodeClip(
+          {
+            input: clip.path,
+            output: tmp,
+            start,
+            end,
+            duration: p.duration,
+            codec: opts.codec === 'hevc' ? 'hevc' : 'h264',
+            cq: op === 'cut' ? 19 : COMPRESS_CQ[opts.quality] || COMPRESS_CQ.balanced,
+            height: op === 'compress' ? +opts.height || 0 : 0,
+            copyVideo: op === 'cut' && !!opts.fast,
+            signal: job.ac.signal,
+          },
+          report
+        );
+        // make sure the new file is complete before the original is touched
+        const q = await media.probe(tmp);
+        const want = op === 'cut' ? end - start : p.duration;
+        const slack = (op === 'cut' && opts.fast ? 4 : 1) + want * 0.02;
+        if (!(q.duration > 0) || Math.abs(q.duration - want) > slack) throw new Error(`the new file is ${q.duration.toFixed(1)}s instead of ${want.toFixed(1)}s, so the original was kept`);
+        if ((q.audioTracks || []).length !== (p.audioTracks || []).length) throw new Error('the new file lost audio tracks, so the original was kept');
+        const before = clip.size;
+        const after = fs.statSync(tmp).size;
+        if (op === 'compress' && after > before * 0.95) {
+          fs.rmSync(tmp, { force: true });
+          sum.skipped.push(`${clip.title}: already small, left as it was`);
+          continue;
+        }
+        let patch;
+        if (op === 'cut') {
+          const marks = (clip.markers || []).filter((t) => t >= start && t <= end).map((t) => +(t - start).toFixed(3));
+          patch = { trim: null, markers: marks };
+        } else {
+          patch = { compressed: { codec: opts.codec === 'hevc' ? 'hevc' : 'h264', quality: opts.quality || 'balanced', before, after, at: Date.now() } };
+        }
+        const r = await lib.replaceFile(clip.id, tmp, { removeOriginal, patch });
+        if (r.note) sum.notes.push(`${clip.title}: ${r.note}`);
+        sum.done++;
+        sum.before += before;
+        sum.after += after;
+        send('clip:updated', pub(r.clip));
+      } catch (e) {
+        removeLater(tmp); // the stopped ffmpeg may still hold it for a moment
+        if (job.cancelled) break;
+        sum.failed.push(`${clip.title}: ${String((e && e.message) || e).split('\n').pop()}`);
+      }
+    }
+    sum.cancelled = job.cancelled;
+    job.running = false;
+    lib.flushDb();
+    send('process:done', sum);
+    send('library:changed');
+  })();
+  return { started: list.length };
 });
 
 // ---------------- import from other recorders ----------------

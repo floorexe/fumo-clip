@@ -53,6 +53,8 @@
           <button class="btn primary" data-sel="combine" title="Join the selected clips into one video"><i data-icon="layers"></i>Combine</button>
           <button class="btn ghost" data-sel="fav"><i data-icon="star"></i>Favorite</button>
           <button class="btn ghost" data-sel="tags"><i data-icon="tag"></i>Categories</button>
+          <button class="btn ghost" data-sel="compress" title="Re-encode to save disk space (keeps every audio track)"><i data-icon="compress"></i>Compress</button>
+          <button class="btn ghost" data-sel="cut" title="Permanently cut the trimmed clips down to their trim"><i data-icon="scissors"></i>Cut to trim</button>
           <button class="btn ghost" data-sel="move"><i data-icon="folder"></i>Move to game</button>
           <button class="btn danger" data-sel="delete"><i data-icon="trash"></i>Delete</button>
           <button class="btn ghost" data-sel="clear">Clear</button>
@@ -85,6 +87,7 @@
               <div class="row gap">
                 <button id="i-show" class="btn ghost sm"><i data-icon="folder"></i>Show in folder</button>
                 <button id="i-copy" class="btn ghost sm"><i data-icon="copy"></i>Copy file</button>
+                <button id="i-compress" class="btn ghost sm" title="Re-encode to save disk space"><i data-icon="compress"></i>Compress</button>
                 <button id="i-delete" class="btn danger sm"><i data-icon="trash"></i>Delete</button>
               </div>
             </div>
@@ -120,6 +123,7 @@
               <button id="c-in" class="btn ghost sm" title="Trim start at playhead (I)">[ Start</button>
               <button id="c-out" class="btn ghost sm" title="Trim end at playhead (O)">End ]</button>
               <button id="c-clear-trim" class="btn ghost sm" title="Remove trim">Reset</button>
+              <button id="c-cut" class="icon-btn" title="Cut the file down to the trim, permanently (saves space)" disabled><i data-icon="scissors"></i></button>
               <label class="toggle sm" title="On: the trimmed part repeats. Off: playback stops at the trim end."><input id="c-loop" type="checkbox" checked /><span>Loop</span></label>
               <button id="c-marker" class="icon-btn" title="Add marker at playhead (B). Ctrl+←/→ jumps between markers, right-click a marker to remove it."><i data-icon="flag"></i></button>
               <button id="c-frame" class="icon-btn" title="Copy this frame as an image (C)"><i data-icon="camera"></i></button>

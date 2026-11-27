@@ -485,6 +485,8 @@ function wireLibrary() {
       return openCombine(ids);
     }
     if (b.dataset.sel === 'tags') return openTagModal(ids);
+    if (b.dataset.sel === 'compress') return openProcess(ids, 'compress');
+    if (b.dataset.sel === 'cut') return openProcess(ids, 'cut');
     if (b.dataset.sel === 'clear') S.selected.clear();
     if (b.dataset.sel === 'fav') return favClips(ids);
     if (b.dataset.sel === 'move') return moveClipsTo(ids);
@@ -581,6 +583,8 @@ function clipMenu(e, id) {
     return showCtx(e, [
       { label: `Combine ${ids.length} clips…`, icon: 'layers', run: () => openCombine(ids) },
       { label: 'Categories…', icon: 'tag', run: () => openTagModal(ids) },
+      { label: 'Compress…', icon: 'compress', run: () => openProcess(ids, 'compress') },
+      { label: 'Cut to trims…', icon: 'scissors', run: () => openProcess(ids, 'cut') },
       { label: 'Move to game…', icon: 'folder', run: () => moveClipsTo(ids) },
       { label: 'Favorite', icon: 'star', run: () => favClips(ids) },
       '-',
@@ -593,6 +597,8 @@ function clipMenu(e, id) {
     { label: 'Rename…', icon: 'edit', run: () => renameClip(id) },
     { label: 'Move to game…', icon: 'gamepad', run: () => moveClip(id) },
     { label: 'Categories…', icon: 'tag', run: () => openTagModal([id]) },
+    { label: 'Compress…', icon: 'compress', run: () => openProcess([id], 'compress') },
+    ...(c.trim ? [{ label: 'Cut file to trim…', icon: 'scissors', run: () => openProcess([id], 'cut') }] : []),
     '-',
     { label: 'Copy file', icon: 'copy', run: () => copyFile(c) },
     { label: 'Show in folder', icon: 'folder', run: () => api.invoke('shell:show', c.path) },
@@ -630,7 +636,7 @@ function modal(html, { wide = false, onClose = null } = {}) {
   const back = document.createElement('div');
   back.className = 'modal-back';
   back.innerHTML = `<div class="modal ${wide ? 'wide' : ''}">${html}</div>`;
-  $('#modal-root').appendChild(back);
+  (document.fullscreenElement || $('#modal-root')).appendChild(back); // in fullscreen, popups must live inside the fullscreen layer
   hydrateIcons(back);
   const close = () => {
     if (!back.isConnected) return;
@@ -968,7 +974,7 @@ function renderDetails() {
     ['Length', fmtDur(c.duration, true)],
     ['Video', c.width ? `${c.width}×${c.height} · ${Math.round(c.fps)} fps · ${(c.vcodec || '').toUpperCase()}` : '…'],
     ['Audio', `${(c.tracks || []).length} track${(c.tracks || []).length === 1 ? '' : 's'}`],
-    ['Size', fmtSize(c.size)],
+    ['Size', c.compressed && c.compressed.before > c.size ? `${fmtSize(c.size)} (compressed from ${fmtSize(c.compressed.before)})` : fmtSize(c.size)],
     ['File', c.file],
   ];
   $('#i-meta').innerHTML = rows.map(([k, v]) => `<span>${k}</span><span title="${esc(v)}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(v)}</span>`).join('');
@@ -1110,6 +1116,7 @@ function renderTimeline() {
   updateClipLane();
   renderMarkers();
   renderRuler();
+  $('#c-cut').disabled = !tr;
 }
 function startRaf() {
   cancelAnimationFrame(P.raf);
@@ -1556,6 +1563,8 @@ function wirePlayer() {
   $('#c-in').onclick = () => setTrim(video.currentTime, S.trim ? S.trim.out : dur());
   $('#c-out').onclick = () => setTrim(S.trim ? S.trim.in : 0, video.currentTime);
   $('#c-clear-trim').onclick = clearTrim;
+  $('#c-cut').onclick = () => S.current && openProcess([S.current.id], 'cut');
+  $('#i-compress').onclick = () => S.current && openProcess([S.current.id], 'compress');
   $('#c-full').onclick = toggleFull;
   $('#c-vol').oninput = (e) => {
     mixer.masterVolume = e.target.value / 100;
@@ -1702,8 +1711,18 @@ function toggleFull() {
   else $('#player-view').requestFullscreen();
 }
 
+// ============================================================ fullscreen: keep popups visible
+document.addEventListener('fullscreenchange', () => {
+  const fsEl = document.fullscreenElement;
+  const modalHost = fsEl || $('#modal-root');
+  $$('.modal-back').forEach((m) => modalHost.appendChild(m));
+  const host = fsEl || document.body;
+  host.appendChild($('#toasts'));
+  host.appendChild($('#ctx'));
+});
+
 function onKey(e) {
-  if ($('#modal-root').children.length) return;
+  if (document.querySelector('.modal-back')) return;
   const tag = (e.target.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'select' || tag === 'textarea') {
     if (e.key === 'Escape') e.target.blur();
@@ -2410,6 +2429,120 @@ async function openImport() {
   };
 
   step1();
+}
+
+// ============================================================ compress / cut to trim (saves disk space)
+const canPlayHevc = (() => {
+  try {
+    return !!document.createElement('video').canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"');
+  } catch {
+    return false;
+  }
+})();
+
+/** op: 'compress' | 'cut' */
+async function openProcess(ids, op) {
+  let clips = ids.map(byId).filter(Boolean);
+  // a clip being cut uses its trim, so make sure the latest trim from the player is saved
+  if (op === 'cut' && S.current && S.trim && ids.includes(S.current.id)) {
+    const n = await call('clip:update', S.current.id, { trim: S.trim });
+    upsert(n);
+    clips = ids.map(byId).filter(Boolean);
+  }
+  if (op === 'cut') clips = clips.filter((c) => c.trim);
+  if (!clips.length) return toast(op === 'cut' ? 'None of those clips has a trim yet. Set one with I / O first.' : 'Nothing to compress');
+  const total = clips.reduce((n, c) => n + c.size, 0);
+  const already = clips.filter((c) => c.compressed).length;
+  const kept = op === 'cut' ? clips.reduce((n, c) => n + (c.trim.out - c.trim.in), 0) : 0;
+  const full = op === 'cut' ? clips.reduce((n, c) => n + (c.duration || 0), 0) : 0;
+  const one = clips.length === 1;
+  const title =
+    op === 'cut'
+      ? one
+        ? `Cut “${clips[0].title}” to its trim`
+        : `Cut ${clips.length} clips to their trims`
+      : one
+        ? `Compress “${clips[0].title}”`
+        : `Compress ${clips.length} clips`;
+
+  const m = modal(
+    `<h2>${esc(title)}</h2><div class="body" id="pr-body">
+      ${
+        op === 'cut'
+          ? `<p>This <b>permanently</b> removes the parts outside the trim from the file${one ? '' : 's'}, keeping ${fmtDur(kept)} of ${fmtDur(full)}. Normal trimming (which keeps the whole clip) stays the default; this is only for saving space. Every audio track is kept.</p>`
+          : `<p>Re-encodes the video to take less space. Every audio track is kept exactly as it is, and so are trims, markers and categories.${already ? ` ${already} of these ${already === 1 ? 'is' : 'are'} already compressed.` : ''}</p>`
+      }
+      <div class="ft"><div class="ft-grid" style="grid-template-columns: repeat(2, 1fr)">
+        ${
+          op === 'cut'
+            ? `<div class="field"><label>Cut</label><select id="pr-fast"><option value="0">Exact (re-encodes, high quality)</option><option value="1">Fast (no re-encode, starts at the nearest keyframe)</option></select></div>`
+            : `<div class="field"><label>Size vs quality</label><select id="pr-quality"><option value="high">Light (barely visible, smaller)</option><option value="balanced" selected>Balanced (much smaller)</option><option value="small">Smallest (softer picture)</option></select></div>
+               <div class="field"><label>Video codec</label><select id="pr-codec"><option value="hevc" ${canPlayHevc ? 'selected' : ''}>H.265 (about half the size)</option><option value="h264" ${canPlayHevc ? '' : 'selected'}>H.264 (plays everywhere)</option></select></div>
+               <div class="field"><label>Resolution</label><select id="pr-height"><option value="0">Keep</option><option value="1080">1080p</option><option value="720">720p</option></select></div>`
+        }
+        <div class="field"><label>The original file${one ? '' : 's'}</label><select id="pr-orig"><option value="trash">Send to the Recycle Bin (safe)</option><option value="delete">Delete permanently (frees space now)</option></select></div>
+      </div></div>
+      <div class="hint" id="pr-hint">${one ? '' : `${clips.length} clips · `}${fmtSize(total)} now. ${op === 'compress' ? 'Clips that would not get smaller are left alone.' : ''}</div>
+    </div>
+    <div class="foot" id="pr-foot"><button class="btn ghost" data-x>Cancel</button><button class="btn primary" id="pr-go">${icon(op === 'cut' ? 'scissors' : 'compress')}${op === 'cut' ? 'Cut' : 'Compress'}</button></div>`,
+    { wide: true }
+  );
+  const el = m.el;
+  const body = $('#pr-body', el);
+  const foot = $('#pr-foot', el);
+  $('[data-x]', foot).onclick = m.close;
+  if (op === 'compress' && !canPlayHevc) $('#pr-codec option[value=hevc]', el).textContent = "H.265 (smaller, but this PC can't play it)";
+  $('#pr-orig', el).onchange = (e) => ($('#pr-hint', el).textContent = e.target.value === 'delete' ? 'The originals will be gone for good once each new file checks out.' : 'You can restore originals from the Recycle Bin. Empty it to actually free the space.');
+
+  $('#pr-go', foot).onclick = async () => {
+    const opts =
+      op === 'cut'
+        ? { fast: $('#pr-fast', el).value === '1', originals: $('#pr-orig', el).value }
+        : { quality: $('#pr-quality', el).value, codec: $('#pr-codec', el).value, height: +$('#pr-height', el).value, originals: $('#pr-orig', el).value };
+    if (opts.originals === 'delete') {
+      const ok = await confirmModal('Delete the originals permanently?', `Once each new file is checked, its original is deleted for good (not sent to the Recycle Bin). ${clips.length} clip${one ? '' : 's'}.`, 'Yes, delete originals');
+      if (!ok) return;
+    }
+    // let go of any file we're about to replace
+    if (S.current && clips.some((c) => c.id === S.current.id)) closePlayer();
+    $$('.card video').forEach((v) => (v.pause(), v.removeAttribute('src'), v.load(), v.remove()));
+    body.innerHTML = `<div class="imp-run">
+      <div class="imp-big" id="pr-count">0<small>of ${clips.length} done</small></div>
+      <div class="hint" id="pr-cur">&nbsp;</div>
+      <div class="progress"><div id="pr-bar"></div></div>
+      <div class="hint">Overall</div>
+      <div class="progress"><div id="pr-all"></div></div>
+      <div class="hint" id="pr-saved"></div></div>`;
+    foot.innerHTML = `<button class="btn ghost" id="pr-stop">Stop</button>`;
+    el.dataset.busy = '1';
+    $('#pr-stop', foot).onclick = () => (api.invoke('process:cancel'), ($('#pr-stop', foot).disabled = true), ($('#pr-cur', body).textContent = 'Stopping… (the clip in progress is left untouched)'));
+    const offP = api.on('process:progress', (p) => {
+      $('#pr-count', body).firstChild.textContent = p.index;
+      $('#pr-cur', body).textContent = p.title;
+      $('#pr-bar', body).style.width = (p.progress * 100).toFixed(1) + '%';
+      $('#pr-all', body).style.width = (((p.index + p.progress) / p.total) * 100).toFixed(1) + '%';
+      if (p.saved > 0) $('#pr-saved', body).textContent = `Saved ${fmtSize(p.saved)} so far`;
+    });
+    const offD = api.on('process:done', async (d) => {
+      offP();
+      offD();
+      delete el.dataset.busy;
+      S.clips = await api.invoke('library:current');
+      renderAll();
+      const saved = d.before - d.after;
+      const pct = d.before ? Math.round((saved / d.before) * 100) : 0;
+      const lines = [...d.notes, ...d.skipped, ...d.failed];
+      body.innerHTML = `<div class="imp-run">
+        <div class="imp-big">${fmtSize(Math.max(0, saved))}<small>saved on ${d.done} clip${d.done === 1 ? '' : 's'}${d.done ? ` (${pct}% smaller)` : ''}${d.cancelled ? ' · stopped early' : ''}</small></div>
+        ${lines.length ? `<div class="set-note ${d.failed.length ? 'warn' : ''}">${lines.slice(0, 8).map(esc).join('<br>')}${lines.length > 8 ? `<br>…and ${lines.length - 8} more` : ''}</div>` : ''}
+        ${d.done && opts.originals !== 'delete' ? '<p>The originals are in the Recycle Bin. Empty it to actually free the space.</p>' : ''}
+      </div>`;
+      foot.innerHTML = `<button class="btn primary" data-x>Done</button>`;
+      $('[data-x]', foot).onclick = m.close;
+      toast(`${op === 'cut' ? 'Cut' : 'Compressed'} ${d.done} clip${d.done === 1 ? '' : 's'}, saved ${fmtSize(Math.max(0, saved))}`, 'good');
+    });
+    await call('process:start', { ids: clips.map((c) => c.id), op, opts });
+  };
 }
 
 boot();

@@ -496,6 +496,62 @@ class Library extends EventEmitter {
     return clip;
   }
 
+  /**
+   * Swap a clip's file for a processed version (tmp, same folder). The clip keeps its info.
+   * Safe order: original -> hidden backup, new file -> final name (backup restored if that fails),
+   * then the backup goes away via removeOriginal (Recycle Bin or delete). If that fails, the backup
+   * is kept visibly as "<name> (original)" so nothing is ever lost.
+   */
+  async replaceFile(id, tmp, { removeOriginal, patch = {} }) {
+    const clip = this.clips.get(id);
+    if (!clip) throw new Error('Clip not found');
+    const retry = async (fn) => {
+      for (let i = 0; ; i++) {
+        try {
+          return await fn();
+        } catch (e) {
+          if (i >= 12 || !['EBUSY', 'EPERM', 'EACCES'].includes(e.code)) throw e;
+          await sleep(350); // the player or a thumbnail job may still have the file open
+        }
+      }
+    };
+    const st0 = await fsp.stat(clip.path);
+    const dir = path.dirname(clip.path);
+    const ext = path.extname(clip.path);
+    const base = path.basename(clip.path, ext);
+    const backup = path.join(dir, '.' + base + '.fumo-old' + ext);
+    const dest = path.join(dir, base + '.mp4');
+    await retry(() => fsp.rename(clip.path, backup));
+    try {
+      await retry(() => fsp.rename(tmp, dest));
+    } catch (e) {
+      await fsp.rename(backup, clip.path).catch(() => {});
+      throw e;
+    }
+    try {
+      await fsp.utimes(dest, st0.atime, st0.mtime);
+    } catch {}
+    let note = '';
+    try {
+      await removeOriginal(backup);
+    } catch {
+      const keep = uniquePath(path.join(dir, base + ' (original)' + ext));
+      await fsp.rename(backup, keep).catch(() => {});
+      note = `kept the original as "${path.basename(keep)}"`;
+    }
+    this.clearCacheFor(clip);
+    const newId = this.idFor(dest);
+    if (newId !== id) this.rekey(id, newId);
+    else this.clips.delete(id);
+    const m = this.meta(newId);
+    Object.assign(m, patch);
+    delete m.probe;
+    delete m.probeKey;
+    const c = await this.buildClip(dest);
+    this.saveDb();
+    return { clip: c, note };
+  }
+
   // ---------- categories: labels kept in the db, a clip can have any number ----------
   categories() {
     const used = new Set();
