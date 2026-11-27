@@ -413,3 +413,27 @@ html.has-bg .tl-panel { background-color: rgb(from var(--bg2) r g b / calc(1 - v
 .imp-run .progress { height: 8px; }
 .imp-big { flex: none; }
 .imp-big small { white-space: nowrap; }
+
+/* ---------- settings: sections on the left ---------- */
+.modal.settings { width: min(940px, 95vw); height: min(700px, 90vh); }
+.set-layout { flex: 1; min-height: 0; display: flex; }
+.set-nav { width: 196px; flex: none; border-right: 1px solid var(--line); padding: 12px 10px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.set-nav button { display: flex; align-items: center; gap: 10px; border: 0; background: none; color: var(--muted); padding: 9px 10px; border-radius: 8px; cursor: pointer; text-align: left; position: relative; }
+.set-nav button:hover { background: var(--bg3); color: var(--text); }
+.set-nav button.on { background: var(--bg4); color: var(--text); }
+.set-nav button.on .ico { color: var(--accent); }
+.set-nav .set-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); margin-left: auto; }
+.set-pane { flex: 1; min-width: 0; overflow-y: auto; }
+.set-pane .set-section { display: none; margin: 0; }
+.set-pane .set-section.on { display: block; }
+.set-pane .set-section h3 { font-size: 17px; text-transform: none; letter-spacing: 0; color: var(--text); margin: 2px 0 14px; }
+
+/* ---------- update banner ---------- */
+.upd-bar { display: flex; align-items: center; gap: 12px; padding: 8px 20px; font-size: 13px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 12%, var(--bg2)); }
+.upd-bar.ready { background: color-mix(in srgb, var(--good) 16%, var(--bg2)); }
+.upd-bar > .ico { color: var(--accent); flex: none; }
+.upd-bar.ready > .ico { color: var(--good); }
+.upd-bar > span { flex: 1; min-width: 0; }
+.upd-bar .upd-prog { width: 140px; height: 5px; border-radius: 3px; background: var(--bg4); overflow: hidden; flex: none; }
+.upd-bar .upd-prog div { height: 100%; background: var(--accent); transition: width .3s; }
+.upd-bar .icon-btn { width: 28px; height: 28px; }

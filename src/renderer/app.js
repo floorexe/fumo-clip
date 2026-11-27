@@ -116,15 +116,12 @@ async function boot() {
     renderAll();
   });
   api.on('toast', (t) => toast(t.text, t.kind));
-  let announced = null;
   api.on('update:status', (u) => {
     S.update = u;
     renderUpdateStatus();
-    if (u.state === 'ready' && announced !== u.version) {
-      announced = u.version;
-      toast(`Fumo Clip ${u.version} is ready to install`, 'good', [{ label: 'Restart now', run: () => api.invoke('update:install') }]);
-    }
+    renderUpdateBanner();
   });
+  api.invoke('update:status').then((u) => ((S.update = u), renderUpdateBanner())).catch(() => {});
   api.on('export:progress', (p) => P.shareProgress && P.shareProgress(p));
 }
 
@@ -426,7 +423,7 @@ function wireLibrary() {
   $('#btn-settings').onclick = openSettings;
   $('#obs-pill').onclick = async () => {
     if (S.obs.status === 'connected') await call('obs:toggleReplay');
-    else openSettings();
+    else openSettings('obs');
   };
 
   const grid = $('#grid');
@@ -632,10 +629,10 @@ function hideCtx() {
   $('#ctx').classList.add('hidden');
 }
 
-function modal(html, { wide = false, onClose = null } = {}) {
+function modal(html, { wide = false, onClose = null, cls = '' } = {}) {
   const back = document.createElement('div');
   back.className = 'modal-back';
-  back.innerHTML = `<div class="modal ${wide ? 'wide' : ''}">${html}</div>`;
+  back.innerHTML = `<div class="modal ${wide ? 'wide' : ''} ${cls}">${html}</div>`;
   (document.fullscreenElement || $('#modal-root')).appendChild(back); // in fullscreen, popups must live inside the fullscreen layer
   hydrateIcons(back);
   const close = () => {
@@ -682,7 +679,17 @@ function confirmModal(title, text, ok = 'OK') {
 }
 
 // ============================================================ settings
-async function openSettings() {
+const SETTINGS_TABS = [
+  ['look', 'Appearance', 'palette'],
+  ['library', 'Library', 'grid'],
+  ['obs', 'OBS', 'record'],
+  ['audio', 'Audio tracks', 'headphones'],
+  ['games', 'Games', 'gamepad'],
+  ['app', 'App', 'gear'],
+  ['updates', 'Updates', 'refresh'],
+  ['storage', 'Storage', 'folder'],
+];
+async function openSettings(tab) {
   const s = await call('settings:get');
   const det = s.obsDetected || {};
   const exeMap = await call('games:exeMap');
@@ -691,16 +698,19 @@ async function openSettings() {
   const norm = (p) => (p || '').replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
   const sameFolder = !!s.watchDir && (norm(s.watchDir) === norm(s.libraryDir) || norm(s.watchDir).startsWith(norm(s.libraryDir) + '\\'));
   const trackWarn = det.multiTrack && det.multiTrack.count <= 1;
+  const obsNeedsAttention = trackWarn || (det.found && !det.wsEnabled);
   const m = modal(
-    `<h2>Settings</h2><div class="body">
-    <div class="set-section"><h3>Theme</h3>${themePickerHtml(s.theme || 'midnight')}</div>
-    <div class="set-section"><h3>Library</h3>
+    `<h2>Settings</h2><div class="set-layout">
+    <nav class="set-nav">${SETTINGS_TABS.map(([id, label, ic]) => `<button data-tab="${id}">${icon(ic)}<span>${label}</span>${id === 'obs' && obsNeedsAttention ? '<i class="set-dot" title="Needs attention"></i>' : ''}</button>`).join('')}</nav>
+    <div class="body set-pane">
+    <div class="set-section" data-tab="look"><h3>Appearance</h3>${themePickerHtml(s.theme || 'midnight')}</div>
+    <div class="set-section" data-tab="library"><h3>Library</h3>
       <div class="set-row"><label>Library folder</label><input id="s-lib" value="${esc(s.libraryDir)}" readonly><button class="btn" id="s-lib-pick">Browse</button></div>
       ${sameFolder ? `<div class="set-note">Your OBS clip folder is the library, so every video in it shows up and new replays <b>stay exactly where OBS saves them</b>. Fumo Clip only remembers which game each one is from. The two options below only apply if the library is a different folder.</div>` : ''}
       <div class="set-row"><label>New replays</label><select id="s-mode"><option value="move">Move into the library</option><option value="copy">Copy into the library (leave original)</option></select></div>
       <div class="set-row"><label></label><label class="toggle"><input type="checkbox" id="s-org" ${s.organizeByGame ? 'checked' : ''}><span>Sort clips into a folder per game</span></label></div>
     </div>
-    <div class="set-section"><h3>OBS</h3>
+    <div class="set-section" data-tab="obs"><h3>OBS</h3>
       <div class="set-row"><label></label><label class="toggle"><input type="checkbox" id="s-obs" ${s.obsEnabled ? 'checked' : ''}><span>Connect to OBS WebSocket (live status + Save button)</span></label></div>
       <div class="set-row"><label>Host / port</label><input id="s-host" value="${esc(s.obsHost)}"><input id="s-port" type="number" style="max-width:90px" value="${esc(s.obsPort)}"></div>
       <div class="set-row"><label>Password</label><input id="s-pass" type="password" value="${esc(s.obsPassword)}"><button class="btn" id="s-detect">Read from OBS</button></div>
@@ -712,28 +722,47 @@ async function openSettings() {
       ${pending ? `<div class="set-row"><label></label><button class="btn" id="s-import">Import ${pending} replay${pending > 1 ? 's' : ''} already in that folder</button></div>` : ''}
       ${trackWarn ? `<div class="set-note warn">OBS only records <b>1 audio track</b> right now. For separate tracks (game / Discord / mic…): OBS <b>Settings → Output</b> → Output Mode <b>Advanced</b> → <b>Recording</b> tab → tick Audio Tracks 1–6. Then in <b>Edit → Advanced Audio Properties</b>, choose which tracks each source goes to. The replay buffer uses the recording settings.</div>` : ''}
     </div>
-    <div class="set-section"><h3>Audio track names</h3>
+    <div class="set-section" data-tab="audio"><h3>Audio track names</h3>
       <div class="set-note">These names apply to every clip. You can also rename a track right in the player.</div>
       ${[0, 1, 2, 3, 4, 5].map((i) => `<div class="set-row"><label>Track ${i + 1}</label><input data-track="${i}" value="${esc(names[i] || '')}" placeholder="${['Everything', 'Game', 'Discord', 'Mic', 'Music', 'Other'][i]}"></div>`).join('')}
     </div>
-    <div class="set-section"><h3>Game names</h3>
+    <div class="set-section" data-tab="games"><h3>Game names</h3>
       <div class="set-note">Fumo Clip names each clip after the app in the foreground when you saved it. Fix names here (program → game). To also move old clips, right-click a game in the sidebar.</div>
       <div class="exe-list">${Object.keys(exeMap).length ? Object.entries(exeMap).sort().map(([exe, n]) => `<div class="set-row"><label title="${esc(exe)}">${esc(exe)}</label><input data-exe="${esc(exe)}" value="${esc(n)}"></div>`).join('') : '<div class="set-note">No games detected yet.</div>'}</div>
     </div>
-    <div class="set-section"><h3>App</h3>
+    <div class="set-section" data-tab="app"><h3>App</h3>
       <div class="set-row"><label></label><label class="toggle"><input type="checkbox" id="s-notify" ${s.notify ? 'checked' : ''}><span>Show a notification when a clip is saved</span></label></div>
       <div class="set-row"><label></label><label class="toggle"><input type="checkbox" id="s-tray" ${s.closeToTray ? 'checked' : ''}><span>Closing the window keeps Fumo Clip running in the tray (needed to catch clips)</span></label></div>
       <div class="set-row"><label></label><label class="toggle"><input type="checkbox" id="s-login" ${s.launchAtLogin ? 'checked' : ''}><span>Start with Windows (installed version only)</span></label></div>
+    </div>
+    <div class="set-section" data-tab="updates"><h3>Updates</h3>
       <div class="set-row"><label></label><label class="toggle"><input type="checkbox" id="s-autoupd" ${s.autoUpdate !== false ? 'checked' : ''}><span>Update automatically (downloads in the background, installs on restart)</span></label></div>
       <div class="set-row"><label>Version</label><span id="upd-status" class="set-note" style="margin:0;flex:1"></span><button class="btn" id="s-upd-check">Check now</button><button class="btn primary hidden" id="s-upd-install">Restart &amp; update</button></div>
+    </div>
+    <div class="set-section" data-tab="storage"><h3>Storage</h3>
       <div id="s-paths"></div>
       <div class="set-row"><label></label><button class="btn" id="s-cache">Clear thumbnail & audio cache</button></div>
     </div>
-  </div>
+  </div></div>
   <div class="foot"><button class="btn ghost" data-x>Cancel</button><button class="btn primary" data-ok>Save</button></div>`,
-    { wide: true }
+    { wide: true, cls: 'settings' }
   );
   const el = m.el;
+  // ---- one section at a time
+  const showTab = (id) => {
+    if (!SETTINGS_TABS.some((t) => t[0] === id)) id = 'look';
+    $$('.set-nav button', el).forEach((b) => b.classList.toggle('on', b.dataset.tab === id));
+    $$('.set-section', el).forEach((sec) => sec.classList.toggle('on', sec.dataset.tab === id));
+    $('.set-pane', el).scrollTop = 0;
+    try {
+      localStorage.settingsTab = id;
+    } catch {}
+  };
+  $('.set-nav', el).addEventListener('click', (e) => {
+    const b = e.target.closest('[data-tab]');
+    if (b) showTab(b.dataset.tab);
+  });
+  showTab(tab || localStorage.settingsTab || 'look');
   $('#s-mode', el).value = s.ingestMode;
   el.addEventListener('click', (e) => {
     const sw = e.target.closest('.theme-sw');
@@ -2544,5 +2573,34 @@ async function openProcess(ids, op) {
     await call('process:start', { ids: clips.map((c) => c.id), op, opts });
   };
 }
+
+// ============================================================ update banner (under the top bar)
+function renderUpdateBanner() {
+  const u = S.update || {};
+  const show = (u.state === 'downloading' || u.state === 'ready') && S.updateHidden !== u.state + u.version;
+  for (const bar of $$('.upd-bar')) {
+    bar.classList.toggle('hidden', !show);
+    bar.classList.toggle('ready', u.state === 'ready');
+    if (!show) continue;
+    bar.innerHTML =
+      u.state === 'ready'
+        ? `${icon('refresh')}<span><b>Fumo Clip v${esc(u.version)} is ready.</b> Restart to update. It only takes a few seconds and your clips stay put.</span>
+           <button class="btn primary sm" data-upd="install">Restart now</button><button class="btn ghost sm" data-upd="later">Later</button>`
+        : `${icon('import')}<span>Downloading Fumo Clip v${esc(u.version || '')}… ${u.percent || 0}%</span>
+           <div class="upd-prog"><div style="width:${u.percent || 0}%"></div></div><button class="icon-btn" data-upd="later" title="Hide">${icon('x')}</button>`;
+  }
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-upd]');
+  if (!b) return;
+  if (b.dataset.upd === 'install') api.invoke('update:install');
+  else {
+    // "Later": hide until something changes (a finished download shows the banner again)
+    const u = S.update || {};
+    S.updateHidden = u.state + u.version;
+    renderUpdateBanner();
+    if (u.state === 'ready') toast('The update installs next time Fumo Clip restarts');
+  }
+});
 
 boot();

@@ -9,7 +9,7 @@ There is no auto-clipping. A clip only exists because you pressed your OBS repla
 Grab the latest **Fumo-Clip-Setup-x.y.z.exe** from the [Releases page](https://github.com/floorexe/fumo-clip/releases/latest) and run it.
 
 - Windows may show a SmartScreen warning because the installer isn't code-signed. Click **More info → Run anyway**.
-- **Updates are automatic.** Fumo Clip checks for a new release shortly after it starts and every few hours, downloads it in the background, and installs it when you restart (or right away with **Restart now**). You can turn this off or check by hand in Settings → App.
+- **Updates are automatic.** Fumo Clip checks for a new release shortly after it starts and every few hours, downloads it in the background, and installs it when you restart. A bar under the top bar shows the download and a **Restart now** button. You can turn this off or check by hand in Settings → App.
 
 ## Features
 
